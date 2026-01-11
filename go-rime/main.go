@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	
+
 	"github.com/bugkingzht/go-rime/llm"
 	"github.com/bugkingzht/go-rime/rime"
 )
@@ -64,18 +64,17 @@ func printContext(session *rime.Session) {
 	// Get candidates (enhanced with LLM if enabled)
 	var candidates []rime.Candidate
 	fmt.Printf("[DEBUG] LLM enabled: %v, suggester: %v\n", enableLLM, llmSuggester != nil)
-	if enableLLM && llmSuggester != nil {
-		enhancedCandidates, err := llmSuggester.GetEnhancedCandidates(context.Background(), rimeEngine, session)
-		if err == nil && len(enhancedCandidates) > 0 {
-			fmt.Printf("[DEBUG] Using enhanced candidates: %d\n", len(enhancedCandidates))
-			candidates = enhancedCandidates
-		} else {
-			fmt.Printf("[DEBUG] Enhanced failed or empty, using original. err=%v, count=%d\n", err, len(enhancedCandidates))
-			// Fall back to original candidates
-			candidates = ctx.Menu.Candidates
-		}
+	if enableLLM && llmSuggester != nil && preedit != "" {
+		// Use new independent LLM suggester with pinyin input
+		enhancedCandidates := llmSuggester.GetEnhancedCandidates(
+			context.Background(),
+			preedit, // Pass pinyin directly
+			ctx.Menu.Candidates,
+		)
+		fmt.Printf("[DEBUG] Enhanced candidates count: %d\n", len(enhancedCandidates))
+		candidates = enhancedCandidates
 	} else {
-		fmt.Println("[DEBUG] LLM disabled, using original candidates")
+		fmt.Println("[DEBUG] LLM disabled or no preedit, using original candidates")
 		candidates = ctx.Menu.Candidates
 	}
 	highlightedIdx := ctx.Menu.HighlightedCandidateIndex
@@ -111,6 +110,10 @@ func printCommitted() {
 func checkCommit() {
 	if text, err := rimeEngine.GetCommit(currentSession); err == nil && text != "" {
 		committedText = append(committedText, text)
+		// Record commit in LLM suggester's history
+		if llmSuggester != nil {
+			llmSuggester.RecordCommit(text)
+		}
 	}
 }
 
@@ -118,14 +121,15 @@ func printHelp() {
 	fmt.Println("\n╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║          RIME Interactive Test - Commands                 ║")
 	fmt.Println("╠════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  <text>      - Type pinyin (e.g., 'nihao')                ║")
-	fmt.Println("║  :<n>        - Select candidate by number (e.g., ':1')    ║")
-	fmt.Println("║  /clear      - Clear current composition                  ║")
-	fmt.Println("║  /status     - Show RIME status                           ║")
-	fmt.Println("║  /committed  - Show all committed text                    ║")
-	fmt.Println("║  /llm        - Toggle LLM suggestions (on/off)            ║")
-	fmt.Println("║  /help       - Show this help message                     ║")
-	fmt.Println("║  /quit       - Exit the program                           ║")
+	fmt.Println("║  <text>       - Type pinyin (e.g., 'nihao')               ║")
+	fmt.Println("║  :<n>         - Select candidate by number (e.g., ':1')   ║")
+	fmt.Println("║  /clear       - Clear current composition                 ║")
+	fmt.Println("║  /clearhistory- Clear LLM commit history                  ║")
+	fmt.Println("║  /status      - Show RIME status                          ║")
+	fmt.Println("║  /committed   - Show all committed text                   ║")
+	fmt.Println("║  /llm         - Toggle LLM suggestions (on/off)           ║")
+	fmt.Println("║  /help        - Show this help message                    ║")
+	fmt.Println("║  /quit        - Exit the program                          ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
 }
 
@@ -134,19 +138,19 @@ func main() {
 	var sharedDataDir string
 	var userDataDir string
 	var appName string
-	
+
 	flag.StringVar(&sharedDataDir, "shared-data", "", "Path to shared RIME data directory")
 	flag.StringVar(&userDataDir, "user-data", "", "Path to user RIME data directory")
 	flag.StringVar(&appName, "app-name", "rime-interactive", "Application name")
 	flag.Parse()
-	
+
 	// Auto-detect data directories if not provided
 	if sharedDataDir == "" {
 		// Try executable directory first
 		execPath, _ := os.Executable()
 		execDir := filepath.Dir(execPath)
 		dataPath := filepath.Join(filepath.Dir(execDir), "data")
-		
+
 		if _, err := os.Stat(dataPath); err == nil {
 			sharedDataDir = dataPath
 		} else {
@@ -154,15 +158,15 @@ func main() {
 			sharedDataDir = "/Library/Input Methods/Squirrel.app/Contents/SharedSupport"
 		}
 	}
-	
+
 	if userDataDir == "" {
 		homeDir, _ := os.UserHomeDir()
 		userDataDir = filepath.Join(homeDir, ".rime-interactive")
 	}
-	
+
 	// Ensure user data directory exists
 	os.MkdirAll(userDataDir, 0755)
-	
+
 	// Initialize LLM suggester if API key is available
 	llmConfig := llm.DefaultConfig()
 	if llmConfig.APIKey != "" {
@@ -180,7 +184,7 @@ func main() {
 		fmt.Println("ℹ️  No API key found (set DASHSCOPE_API_KEY or OPENAI_API_KEY)")
 		fmt.Println("    LLM suggestions disabled")
 	}
-	
+
 	// Copy default.custom.yaml to user data directory if not exists
 	customConfigSrc := filepath.Join(sharedDataDir, "default.custom.yaml")
 	customConfigDst := filepath.Join(userDataDir, "default.custom.yaml")
@@ -189,7 +193,7 @@ func main() {
 			os.WriteFile(customConfigDst, data, 0644)
 		}
 	}
-	
+
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║        RIME Go Wrapper - Interactive Test Console         ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
@@ -205,7 +209,7 @@ func main() {
 		UserDataDir:   userDataDir,
 		AppName:       appName,
 	}
-	
+
 	rimeEngine = rime.New(traits)
 	if rimeEngine == nil {
 		fmt.Println("✗ Failed")
@@ -253,6 +257,13 @@ func main() {
 			case "/clear":
 				rimeEngine.ClearComposition(currentSession)
 				fmt.Println("  ✓ Composition cleared")
+			case "/clearhistory":
+				if llmSuggester != nil {
+					llmSuggester.ClearHistory()
+					fmt.Println("  ✓ LLM history cleared")
+				} else {
+					fmt.Println("  ✗ LLM not available")
+				}
 			case "/committed":
 				if len(committedText) > 0 {
 					fmt.Println("\n  All committed text:")
