@@ -1,0 +1,4 @@
+Version: 1.0.0
+Build Date: 2026-01-11 21:41:41
+Platform: Darwin arm64
+Go Version: go version go1.24.3 darwin/arm64
